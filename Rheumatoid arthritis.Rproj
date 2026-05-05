@@ -1,0 +1,135 @@
+###############################
+# 1. INSTALL & LOAD PACKAGES
+###############################
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+packages <- c("GEOquery","limma","pheatmap","ggplot2")
+
+for (pkg in packages) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    if (pkg %in% c("GEOquery","limma")) {
+      BiocManager::install(pkg)
+    } else {
+      install.packages(pkg)
+    }
+  }
+  library(pkg, character.only = TRUE)
+}
+
+###############################
+# 2. DOWNLOAD DATA (GEO)
+###############################
+
+gse <- getGEO("GSE1919", GSEMatrix = TRUE)
+eset <- gse[[1]]
+
+expr <- exprs(eset)
+meta <- pData(eset)
+
+###############################
+# 3. DEFINE CONDITIONS
+###############################
+
+# Adjust this column if needed
+sample_info <- meta$source_name_ch1
+
+condition <- ifelse(grepl("rheumatoid", sample_info, ignore.case=TRUE), "RA",
+                    ifelse(grepl("normal", sample_info, ignore.case=TRUE), "Control",
+                           ifelse(grepl("osteoarthritis", sample_info, ignore.case=TRUE), "OA", NA)))
+
+condition <- factor(condition)
+
+print(table(condition))
+
+###############################
+# 4. FILTER RA vs CONTROL ONLY
+###############################
+
+keep <- condition %in% c("Control","RA")
+
+expr <- expr[, keep]
+condition <- droplevels(condition[keep])
+meta <- meta[keep, ]
+
+###############################
+# 5. DESIGN MATRIX
+###############################
+
+design <- model.matrix(~0 + condition)
+colnames(design) <- levels(condition)
+
+###############################
+# 6. DIFFERENTIAL EXPRESSION
+###############################
+
+fit <- lmFit(expr, design)
+
+contrast.matrix <- makeContrasts(RA - Control, levels = design)
+
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2)
+
+results <- topTable(fit2, adjust="fdr", number=Inf)
+
+###############################
+# 7. FILTER SIGNIFICANT GENES
+###############################
+
+deg <- subset(results, adj.P.Val < 0.05 & abs(logFC) > 1)
+
+write.csv(results, "All_Genes.csv")
+write.csv(deg, "Significant_Genes.csv")
+
+###############################
+# 8. PCA PLOT
+###############################
+
+pca <- prcomp(t(expr), scale.=TRUE)
+
+pca_df <- data.frame(pca$x, condition)
+
+p <- ggplot(pca_df, aes(x=PC1, y=PC2, color=condition, label=rownames(pca_df))) +
+  geom_point(size=4) +
+  geom_text(vjust=1.5, size=3) +
+  theme_minimal() +
+  ggtitle("PCA Plot: RA vs Control")
+
+print(p)
+
+###############################
+# 9. HEATMAP (TOP 50 GENES)
+###############################
+
+top_genes <- rownames(deg)[1:50]
+
+annotation_col <- data.frame(condition)
+rownames(annotation_col) <- colnames(expr)
+
+pheatmap(expr[top_genes, ],
+         scale="row",
+         annotation_col=annotation_col,
+         show_rownames=FALSE,
+         main="Top 50 Differentially Expressed Genes (RA vs Control)")
+
+###############################
+# 10. VOLCANO PLOT
+###############################
+
+results$threshold <- as.factor(abs(results$logFC) > 1 & results$P.Value < 0.05)
+
+v <- ggplot(results, aes(x=logFC, y=-log10(P.Value), color=threshold)) +
+  geom_point(alpha=0.8) +
+  scale_color_manual(values=c("grey","red")) +
+  theme_minimal() +
+  ggtitle("Volcano Plot: RA vs Control") +
+  xlab("Log2 Fold Change") +
+  ylab("-log10 P-value") +
+  coord_cartesian(xlim = c(-5, 5))   # 👈 FIX
+
+print(v)
+###############################
+# DONE
+###############################
+
